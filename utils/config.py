@@ -13,7 +13,7 @@ import os
 
 # Public domain used in every generated link.
 PUBLIC_BASE_URL = os.environ.get(
-    "PUBLIC_BASE_URL", "https://pw-live-proxy.onrender.com"
+    "PUBLIC_BASE_URL", "https://live-system-final-test-by-ms-bro.onrender.com"
 )
 
 # ─── Server-side Admin Auth (keys never reach the browser) ────────────────
