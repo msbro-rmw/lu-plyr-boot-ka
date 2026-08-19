@@ -3,7 +3,6 @@ import os
 import re
 import threading
 import time
-import unicodedata
 import functools
 from datetime import datetime, timedelta
 from urllib.parse import urljoin, urlparse, parse_qsl, urlencode, urlunparse, quote
@@ -16,19 +15,9 @@ from flask import (
 
 from utils.db import get_db
 from utils.text import display_title
+from utils.linkgen import generate_live_link, LinkGenError
+from utils.config import PUBLIC_BASE_URL, OWNER_NAME, ADMIN_KEYS, VIP_KEYS
 from recorder import start_recording, resume_pending
-
-# ─── Configuration ──────────────────────────────────────────────────────────
-# Public domain used in every generated link. ONLY line to edit if this
-# service's Render domain ever changes.
-PUBLIC_BASE_URL = os.environ.get(
-    "PUBLIC_BASE_URL", "https://pw-live-proxy.onrender.com"
-)
-
-# ─── Server-side Admin Auth (keys never reach the browser) ────────────────
-OWNER_NAME = os.environ.get("OWNER_NAME", "ViPvxMS10BRO")
-ADMIN_KEYS = ["MS#Admin_R4!xQ8Lp7", "Core$MS_N6v!T2Zk9", "mS@Root_P8#Lm5Qx3"]
-VIP_KEYS = ["ToXic#ViPR8m!4QxL7", "tOxic@VipN5v!9ZpK2", "ToXic$ViPX7#rT3Lm8"]
 
 RECORDINGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
@@ -256,22 +245,6 @@ def admin_required(view):
     return wrapped
 
 
-def _sanitize_name(name: str) -> str:
-    """Spaces → hyphens; sirf letters (Hindi/English), numbers, hyphen."""
-    name = (name or "").strip()
-    name = re.sub(r"\s+", "-", name)
-    kept = []
-    for ch in name:
-        if ch == "-":
-            kept.append(ch)
-            continue
-        if unicodedata.category(ch)[0] in ("L", "N"):
-            kept.append(ch)
-    slug = "".join(kept)
-    slug = re.sub(r"-{2,}", "-", slug).strip("-")
-    return slug[:100]
-
-
 @flask_app.route("/login", methods=["POST"])
 def login():
     data = request.get_json(silent=True) or {}
@@ -304,57 +277,16 @@ def api_generate():
     original_url = (data.get("original_url") or "").strip()
     desired_name = (data.get("name") or "").strip()
 
-    if not original_url:
-        return jsonify({"ok": False, "error": "Original m3u8 link required"}), 400
-    if not original_url.startswith(("http://", "https://")):
-        return jsonify({"ok": False, "error": "Invalid link — valid http(s) URL do"}), 400
+    try:
+        result = generate_live_link(lectures_col, original_url, desired_name, PUBLIC_BASE_URL)
+    except LinkGenError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
 
-    name = _sanitize_name(desired_name)
-    if not name:
-        return jsonify({
-            "ok": False,
-            "error": "Invalid class name — sirf letters, numbers aur hyphen(-) allowed hai.",
-        }), 400
-
-    now = datetime.utcnow()
-    token = base64.urlsafe_b64encode(os.urandom(12)).decode().rstrip("=")
-    lectures_col.update_one(
-        {"_id": name},
-        {
-            "$set": {
-                "original_url": original_url,
-                "status": "LIVE",
-                "title": display_title(name),
-                "updated_at": now,
-            },
-            "$setOnInsert": {
-                "created_at": now,
-                "token": token,
-                "telegram_file_id": None,
-                "duration": None,
-            },
-            # Har naye/re-generate hone par watch_gen bump (field na ho to
-            # $inc khud 0 se shuru karke 1 kar deta hai) — agar is naam ka
-            # koi purana background watcher chal raha ho (purani link ke
-            # liye) to wo khud-ba-khud supersede/stop ho jaayega, aur ek
-            # naya watcher naye original_url ke liye start hoga neeche.
-            "$inc": {"watch_gen": 1},
-        },
-        upsert=True,
-    )
-    doc = lectures_col.find_one({"_id": name})
-
-    # Live end hote hi automatic download + Telegram upload ke liye
-    # background watcher — koi manual "Start Recording" click zaroori
-    # nahi, generate hote hi khud shuru ho jaata hai.
-    start_recording(name, original_url, lectures_col)
-
-    public_link = f"{PUBLIC_BASE_URL}/{name}"
     return jsonify({
         "ok": True,
-        "name": name,
-        "public_link": public_link,
-        "status": doc.get("status", "LIVE"),
+        "name": result["name"],
+        "public_link": result["public_link"],
+        "status": result["status"],
     })
 
 
@@ -439,6 +371,17 @@ def play(name):
 # thi unke background watchers dobara chalu karo, taaki koi bhi live class
 # jiska recording pending tha wo aage bhi khud-ba-khud process ho jaaye.
 threading.Thread(target=resume_pending, args=(lectures_col,), daemon=True).start()
+
+# ── Telegram "Live Link Generator" bot ───────────────────────────────────
+# Same process/thread ke andar bot bhi chalta hai (jaise recorder watchers
+# chalte hain) — koi alag Render service nahi chahiye. Agar TELEGRAM_API_ID /
+# TELEGRAM_API_HASH / LIVE_BOT_TOKEN set nahi hai to bot silently skip ho
+# jaata hai (website normal chalta rehta hai, kuchh nahi tootega).
+try:
+    from bot import start_bot_in_background
+    start_bot_in_background(lectures_col)
+except Exception as e:
+    print(f"[main] Telegram bot start skipped/failed: {e}")
 
 
 def run_flask():
