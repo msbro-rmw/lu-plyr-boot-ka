@@ -1,5 +1,5 @@
 Flask
-pymong
+pymongo
 requests
 gunicorn
 # Telegram MTProto upload — HTTP Bot API ke 50MB limit ko bypass karke
