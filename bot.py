@@ -51,11 +51,11 @@ from utils.subscription import (
 )
 from utils.db import get_db
 
-API_ID = os.environ.get("TELEGRAM_API_ID", "38498066")
-API_HASH = os.environ.get("TELEGRAM_API_HASH", "c9696114751feacdeb1b4487f5839a1a")
-BOT_TOKEN = os.environ.get("LIVE_BOT_TOKEN", "8876274833:AAGf1g5JxltZCml9uJhcMrm67OoXLkmis34")
-OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "8909902924")
-FORCE_SUB_CHANNEL = os.environ.get("FORCE_SUB_CHANNEL", "PW_SENSEI").lstrip("@")
+API_ID = os.environ.get("TELEGRAM_API_ID", "").strip()
+API_HASH = os.environ.get("TELEGRAM_API_HASH", "").strip()
+BOT_TOKEN = os.environ.get("LIVE_BOT_TOKEN", "").strip()
+OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "").strip()
+FORCE_SUB_CHANNEL = os.environ.get("FORCE_SUB_CHANNEL", "PW_SENSEI").strip().lstrip("@")
 
 START_IMAGE_URL = "https://graph.org/file/96f7e50b37c6bd4dc5071-5eadeaf54110b8c34a.jpg"
 JOIN_CHANNEL_URL = f"https://t.me/{FORCE_SUB_CHANNEL}"
@@ -86,22 +86,53 @@ def _looks_like_m3u8(url: str) -> bool:
 
 def start_bot_in_background(lectures_col):
     """main.py isko call karta hai app boot hote hi."""
-    if not (API_ID and API_HASH and BOT_TOKEN):
-        print("[bot] TELEGRAM_API_ID / TELEGRAM_API_HASH / LIVE_BOT_TOKEN missing — bot not started.")
+    missing = []
+    if not API_ID: missing.append("TELEGRAM_API_ID")
+    if not API_HASH: missing.append("TELEGRAM_API_HASH")
+    if not BOT_TOKEN: missing.append("LIVE_BOT_TOKEN")
+    if missing:
+        print(f"[bot] ❌ NOT STARTED — missing env var(s): {', '.join(missing)}. "
+              f"Add these in Render → Environment, then redeploy. Website is unaffected.")
         return
+    if not OWNER_ID:
+        print("[bot] ⚠️ TELEGRAM_OWNER_ID not set — /Addauth, /rmauth, /User, /Broadcast "
+              "will reply 'Only the owner can use this command' for EVERYONE until this is set.")
 
     def _run():
         import asyncio
-        try:
-            # Naya thread hai — is thread ke liye explicitly ek asyncio
-            # event loop set karna zaroori hai (Python background threads
-            # me by-default koi current loop nahi hota, aur Pyrogram
-            # internally asyncio.get_event_loop() use karta hai).
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            _run_bot(lectures_col)
-        except Exception as e:
-            print(f"[bot] fatal error, bot stopped: {e}")
+        # Naya thread hai — is thread ke liye explicitly ek asyncio event
+        # loop set karna zaroori hai (Python background threads me by
+        # default koi current loop nahi hota, aur Pyrogram internally
+        # asyncio.get_event_loop() use karta hai).
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        # Retry loop — koi bhi startup/connection error ho (bad token,
+        # temporary network issue, Telegram side hiccup) to bot HAMESHA ke
+        # liye chup nahi ho jaata. Har attempt clearly logged hoti hai
+        # taaki Render logs dekh kar exact wajah pata chal jaaye.
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                _run_bot(lectures_col)
+                # app.run()/idle() sirf graceful shutdown (SIGINT/SIGTERM)
+                # par hi return karta hai — is line tak aana normal hi hai.
+                print("[bot] stopped (shutdown signal received).")
+                break
+            except Exception as e:
+                err_name = type(e).__name__
+                hint = ""
+                if err_name in ("AccessTokenInvalid", "AccessTokenExpired"):
+                    hint = " → LIVE_BOT_TOKEN galat/expired hai, BotFather se dobara check karo."
+                elif err_name in ("ApiIdInvalid",):
+                    hint = " → TELEGRAM_API_ID / TELEGRAM_API_HASH galat hai, my.telegram.org se dobara check karo."
+                elif err_name in ("ApiIdPublishedFlood",):
+                    hint = " → ye API_ID/HASH public leak ho chuka hai, my.telegram.org se naya generate karo."
+                print(f"[bot] ❌ attempt #{attempt} failed: {err_name}: {e}{hint}")
+                wait = min(60, 5 * attempt)
+                print(f"[bot] retrying in {wait}s…")
+                time.sleep(wait)
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -464,5 +495,22 @@ def _run_bot(lectures_col):
         name = m.group(1) if m else ""
         await cq.answer(f"{PUBLIC_BASE_URL}/{name}", show_alert=True)
 
-    print("[bot] starting Telegram bot…")
-    app.run()
+    print("[bot] connecting to Telegram…")
+    import asyncio
+
+    async def _main():
+        await app.start()
+        me = await app.get_me()
+        print(f"[bot] ✅ CONNECTED as @{me.username} (id={me.id}) — listening for /start, /Live now.")
+        try:
+            from pyrogram import idle
+            await idle()
+        except ImportError:
+            # Bahut purana pyrogram version jisme idle() nahi hai — bas
+            # process alive rakho jab tak thread khatam na ho.
+            while True:
+                await asyncio.sleep(3600)
+        await app.stop()
+        print("[bot] disconnected.")
+
+    asyncio.get_event_loop().run_until_complete(_main())
