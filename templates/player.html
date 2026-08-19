@@ -102,7 +102,16 @@ main { flex:1; display:flex; flex-direction:column; align-items:center; padding:
 }
 .cbtn:hover { background:rgba(255,255,255,.25); }
 .progress-wrap { flex:1; height:5px; background:rgba(255,255,255,.18); border-radius:99px; cursor:pointer; position:relative; }
-.progress-bar { height:100%; background:linear-gradient(90deg, var(--accent), var(--accent2)); border-radius:99px; width:0%; }
+.progress-wrap:hover { height:7px; margin-top:-1px; }
+.progress-bar { height:100%; background:linear-gradient(90deg, var(--accent), var(--accent2)); border-radius:99px; width:0%; pointer-events:none; }
+.buffering-pill {
+    position:absolute; top:14px; left:14px; z-index:16; display:none;
+    align-items:center; gap:7px; padding:5px 12px; border-radius:999px;
+    background:rgba(0,0,0,.55); backdrop-filter:blur(6px); font-size:11px; color:#e5e7eb;
+}
+.buffering-pill.show { display:flex; }
+.buffering-pill .mini-spin { width:11px; height:11px; border-radius:50%;
+    border:2px solid rgba(255,255,255,.25); border-top-color:#fff; animation:spin .7s linear infinite; }
 .time-label { font-size:11.5px; color:#d1d5db; min-width:70px; text-align:center; flex-shrink:0; }
 .go-live {
     padding:0 14px; height:30px; border:none; border-radius:999px;
@@ -139,6 +148,8 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
 
     <div class="shell" id="shell">
         <video id="video" playsinline></video>
+
+        <div class="buffering-pill" id="bufferingPill"><div class="mini-spin"></div><span>Buffering…</span></div>
 
         <!-- Custom controls -->
         <div class="controls" id="controls">
@@ -198,6 +209,7 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
     var progressBar = document.getElementById("progressBar");
     var progressWrap = document.getElementById("progressWrap");
     var timeLabel = document.getElementById("timeLabel");
+    var bufferingPill = document.getElementById("bufferingPill");
 
     var hls = null;
     var isLive = true;
@@ -239,7 +251,6 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
         overlayMsg.className = "msg error";
     }
     function hideOverlay() { overlay.classList.add("hidden"); }
-
     function showEnded(st) {
         overlay.classList.remove("hidden");
         spinner.style.display = "none";
@@ -319,20 +330,46 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
                 lowLatencyMode: true,
                 backBufferLength: 90,
                 liveSyncDurationCount: 3,
+                liveMaxLatencyDurationCount: 8,
                 manifestLoadingMaxRetry: 6,
                 levelLoadingMaxRetry: 6,
-                fragLoadingMaxRetry: 6,
+                fragLoadingMaxRetry: 8,
                 manifestLoadingRetryDelay: 1000,
                 levelLoadingRetryDelay: 1000,
                 fragLoadingRetryDelay: 1000,
+                // ── Smoother playback / kam "atakna" (stalls) ──
+                // Zyaada aage tak buffer karke rakho taaki thoda network
+                // hiccup aane par bhi playback rukey nahi.
+                maxBufferLength: 30,
+                maxMaxBufferLength: 90,
+                maxBufferSize: 90 * 1000 * 1000,
+                maxBufferHole: 1,
+                highBufferWatchdogPeriod: 1,
+                nudgeMaxRetry: 8,
+                nudgeOffset: 0.15,
             });
 
             hls.on(Hls.Events.MANIFEST_PARSED, function () {
                 manifestEverLoaded = true;
                 clearLoadWatchdog();
-                video.muted = false;
-                video.play().catch(function () {
-                    video.muted = false; // autoplay policy fallback
+                // Reliable autoplay fix: kai browsers unmuted autoplay ko
+                // silently BLOCK kar dete hain (play() promise reject ho
+                // jaata hai) — video kabhi actually play hi nahi hota,
+                // sirf pehla frame frozen dikhta rehta hai, aur "playing"
+                // event kabhi fire nahi hota, isliye "Live class load ho
+                // rahi hai…" overlay hata hi nahi. Fix: pehle MUTED
+                // autoplay try karo (ye har browser allow karta hai) —
+                // isse turant playback shuru ho jaata hai aur overlay turant
+                // hat jaata hai — fir turant unmute try karo; agar unmute
+                // se bhi browser rok de to muted hi rehne do (user tap se
+                // khud unmute kar sakta hai, jaisa neeche click handler mein hai).
+                video.muted = true;
+                video.play().then(function () {
+                    video.muted = false;
+                    video.play().catch(function () {
+                        video.muted = true; // unmuted na chala to muted hi theek
+                    });
+                }).catch(function () {
                     video.play().catch(function () {});
                 });
             });
@@ -390,7 +427,11 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
             video.addEventListener("loadedmetadata", function () {
                 manifestEverLoaded = true;
                 clearLoadWatchdog();
-                video.play().catch(function () {});
+                video.muted = true;
+                video.play().then(function () {
+                    video.muted = false;
+                    video.play().catch(function () { video.muted = true; });
+                }).catch(function () {});
             });
         } else {
             showError("HLS is not supported in this browser.");
@@ -398,14 +439,36 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
     }
 
     // ─────────── Video events ───────────
-    video.addEventListener("playing", function () {
-        if (isLive) {
+    // "playing" hamesha reliably fire ho ye guarantee nahi (kuch mobile
+    // browsers mein flaky hota hai) — isliye "timeupdate" ko bhi ek backup
+    // trigger banaya hai: jaise hi currentTime aage badhna shuru ho (matlab
+    // video sach me play ho raha hai), overlay turant hata do — chahe
+    // "playing" event mila ho ya na mila ho.
+    function markActuallyPlaying() {
+        if (isLive && !video.paused && !video.seeking) {
             hideOverlay();
             liveBadge.classList.add("show");
         }
-    });
+    }
+    video.addEventListener("playing", markActuallyPlaying);
+    video.addEventListener("timeupdate", markActuallyPlaying);
+    video.addEventListener("canplay", markActuallyPlaying);
+
     video.addEventListener("error", function () {
         if (video.getAttribute("src")) showError("Video error – please refresh and fix.");
+    });
+
+    // ─────────── Buffering indicator (video "atakne" par chhota indicator,
+    // bada overlay dobara nahi — smooth feel ke liye) ───────────
+    video.addEventListener("waiting", function () {
+        if (!overlay.classList.contains("hidden")) return; // already loading overlay dikh raha hai
+        bufferingPill.classList.add("show");
+    });
+    video.addEventListener("playing", function () {
+        bufferingPill.classList.remove("show");
+    });
+    video.addEventListener("canplay", function () {
+        bufferingPill.classList.remove("show");
     });
 
     // Live class ki speed hamesha 1x — kisi bhi tarah (native context menu,
@@ -433,6 +496,24 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
         }
     });
 
+    // Fullscreen tap → force LANDSCAPE orientation (better viewing on
+    // mobile); tap fullscreen again (exit) → automatically back to normal
+    // PORTRAIT. screen.orientation.lock() sirf fullscreen ke andar hi kaam
+    // karta hai (browser requirement) — isliye enter/exit dono par handle
+    // karte hain. Agar browser support na kare (e.g. desktop / iOS Safari)
+    // to silently ignore ho jaata hai, koi error nahi.
+    document.addEventListener("fullscreenchange", function () {
+        if (document.fullscreenElement) {
+            if (screen.orientation && screen.orientation.lock) {
+                screen.orientation.lock("landscape").catch(function () {});
+            }
+        } else {
+            if (screen.orientation && screen.orientation.unlock) {
+                try { screen.orientation.unlock(); } catch (e) {}
+            }
+        }
+    });
+
     // Go Live — live edge pe jump
     function updateGoLiveState() {
         if (!isLive) return;
@@ -453,7 +534,10 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
         }
     });
 
-    // Progress bar (recorded mode mein seek, live mode mein buffer position)
+    // Progress bar (recorded mode mein seek, live mode mein DVR buffer
+    // position — user is bhi drag/tap karke live buffer ke andar
+    // aage-pichhe ja sakta hai, jaisे koi late-join karke miss hui shuruaat
+    // dekhna chahe. Go Live button hamesha turant live edge par le jaata hai.)
     setInterval(function () {
         try {
             if (isLive) {
@@ -462,6 +546,10 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
                     var start = video.seekable.start(0);
                     var pct = end > start ? ((video.currentTime - start) / (end - start)) * 100 : 0;
                     progressBar.style.width = Math.min(100, Math.max(0, pct)) + "%";
+                    // Live DVR window ke andar "kitna peeche hai" dikhane ke liye
+                    // chhota running time counter (jaisa reference mein tha).
+                    timeLabel.style.display = "";
+                    timeLabel.textContent = fmt(video.currentTime - start) + " / " + fmt(end - start);
                 }
                 updateGoLiveState();
             } else if (video.duration) {
@@ -477,12 +565,36 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
         return (h ? h + ":" : "") + String(m).padStart(2, "0") + ":" + String(sec).padStart(2, "0");
     }
 
-    progressWrap.addEventListener("click", function (e) {
-        if (isLive) return; // live mein seek mat karo — Go Live use karo
-        if (!video.duration) return;
+    function seekFromEvent(clientX) {
         var rect = progressWrap.getBoundingClientRect();
-        video.currentTime = ((e.clientX - rect.left) / rect.width) * video.duration;
+        var ratio = Math.min(1, Math.max(0, (clientX - rect.left) / rect.width));
+        if (isLive) {
+            if (!video.seekable.length) return;
+            var start = video.seekable.start(0);
+            var end = video.seekable.end(video.seekable.length - 1);
+            video.currentTime = start + ratio * (end - start);
+        } else {
+            if (!video.duration) return;
+            video.currentTime = ratio * video.duration;
+        }
+    }
+
+    progressWrap.addEventListener("click", function (e) {
+        seekFromEvent(e.clientX);
     });
+
+    // Touch/drag support — mobile par bhi smoothly scrub kar sake, sirf
+    // tap nahi.
+    var scrubbing = false;
+    progressWrap.addEventListener("pointerdown", function (e) {
+        scrubbing = true;
+        seekFromEvent(e.clientX);
+    });
+    window.addEventListener("pointermove", function (e) {
+        if (!scrubbing) return;
+        seekFromEvent(e.clientX);
+    });
+    window.addEventListener("pointerup", function () { scrubbing = false; });
 
     // ─────────── Boot ───────────
     if (INITIAL_STATUS === "READY") {
