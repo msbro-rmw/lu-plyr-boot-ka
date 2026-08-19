@@ -64,8 +64,8 @@ os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "PWSENSEI_FileStoreBot")
-LOCAL_API_URL = os.environ.get("TELEGRAM_LOCAL_API_URL", "").rstrip("/")
+BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "Testbro786Bot")
+LOCAL_API_URL = os.environ.get("TELEGRAM_LOCAL_API_URL", "")
 
 # Same header set as main.py's UPSTREAM_HEADERS — kaafi CDN edge nodes
 # generic/non-browser requests ko drop/403 kar dete hain.
