@@ -84,19 +84,8 @@ def _looks_like_m3u8(url: str) -> bool:
     return bool(M3U8_NAME_RE.match(filename))
 
 
-# Guard against the bot ever being started twice in the same process
-# (extra safety net — e.g. if this module were ever imported twice).
-_bot_thread_started = False
-
-
 def start_bot_in_background(lectures_col):
     """main.py isko call karta hai app boot hote hi."""
-    global _bot_thread_started
-    if _bot_thread_started:
-        print("[bot] start_bot_in_background() called again — ignoring (already running).")
-        return
-    _bot_thread_started = True
-
     missing = []
     if not API_ID: missing.append("TELEGRAM_API_ID")
     if not API_HASH: missing.append("TELEGRAM_API_HASH")
@@ -127,11 +116,9 @@ def start_bot_in_background(lectures_col):
             attempt += 1
             try:
                 _run_bot(lectures_col)
-                # _run_bot() ab kabhi normal return nahi karta (hamesha
-                # forever block rehta hai jab tak process khud stop na ho)
-                # — ye line sirf defensive hai, practically kabhi nahi
-                # chalegi.
-                print("[bot] _run_bot returned unexpectedly — stopping.")
+                # app.run()/idle() sirf graceful shutdown (SIGINT/SIGTERM)
+                # par hi return karta hai — is line tak aana normal hi hai.
+                print("[bot] stopped (shutdown signal received).")
                 break
             except Exception as e:
                 err_name = type(e).__name__
@@ -516,29 +503,14 @@ def _run_bot(lectures_col):
         me = await app.get_me()
         print(f"[bot] ✅ CONNECTED as @{me.username} (id={me.id}) — listening for /start, /Live now.")
         try:
-            # IMPORTANT: pyrogram.idle() yaha use NAHI karna — wo OS signal
-            # handlers (SIGINT/SIGTERM) register karne ki koshish karta hai,
-            # jo Python mein SIRF main thread se hi possible hai. Ye bot ek
-            # background thread mein chal raha hai (Flask/gunicorn ka main
-            # thread already busy hai), isliye idle() ek exception fenkta
-            # tha → niche wala retry-loop usko "connection error" samajh
-            # kar phir se ek NAYA Client start kar deta tha, jabki purana
-            # wala bhi (silently) connected hi reh jaata tha — nateeja: 2-3-4
-            # client instances EK SAATH connected, har ek /start ka
-            # apna-apna reply bhejta — isi wajah se "/start 4-5 baar reply
-            # karta hai" wala bug aa raha tha. Fix: bas hamesha ke liye
-            # chup-chaap block ho jaao, koi signal handler touch mat karo.
-            stop_forever = asyncio.Event()
-            await stop_forever.wait()
-        finally:
-            # Chahe kuch bhi ho (koi unexpected error), connection ko
-            # hamesha properly band karo pehle — taaki agar upar wala loop
-            # retry kare to purana session zinda na reh jaaye aur duplicate
-            # replies na aayein.
-            try:
-                await app.stop()
-            except Exception:
-                pass
-            print("[bot] disconnected.")
+            from pyrogram import idle
+            await idle()
+        except ImportError:
+            # Bahut purana pyrogram version jisme idle() nahi hai — bas
+            # process alive rakho jab tak thread khatam na ho.
+            while True:
+                await asyncio.sleep(3600)
+        await app.stop()
+        print("[bot] disconnected.")
 
     asyncio.get_event_loop().run_until_complete(_main())
