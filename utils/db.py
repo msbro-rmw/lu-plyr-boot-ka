@@ -7,7 +7,7 @@ _client = None
 # by setting a MONGO_URI environment variable on Render (recommended),
 # without touching this file.
 _DEFAULT_MONGO_URI = (
-    "mongodb+srv://developerbro723_db_user:9axC7c7iQm0G3ESO@cluster0.dr8m75m.mongodb.net/?appName=Cluster0"
+    "mongodb+srv://devms786178_db_user:cEtMdLjmHF5EM2Pf@cluster0.xbqyvnn.mongodb.net/?appName=Cluster0"
 )
 
 
