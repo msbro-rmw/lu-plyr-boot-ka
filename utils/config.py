@@ -26,3 +26,10 @@ VIP_KEYS = ["ToXic#ViPR8m!4QxL7", "tOxic@VipN5v!9ZpK2", "ToXic$ViPX7#rT3Lm8"]
 # NOW" dabane par ye key maangi jaati hai (jaisa Live-quuisz repo ke "Delete
 # Quiz" flow mein hota hai). Override karne ke liye env var set karo.
 END_LIVE_CONFIRM_KEY = os.environ.get("END_LIVE_CONFIRM_KEY", "EndLive#PWSensei$9K2mX")
+
+# ─── Secret 📐 icon → "NO" → Owner Dashboard access key ────────────────────
+# Player page ke secret icon flow mein "NO" dabane par ye Dashboard Key
+# maangi jaati hai — sirf sahi key se hi /owner/<name> par redirect hota
+# hai. Backend-only (kabhi bhi JS/HTML mein hardcode nahi karna — isiliye
+# verification /api/dashboard-key/verify se hoti hai).
+DASHBOARD_ACCESS_KEY = os.environ.get("DASHBOARD_ACCESS_KEY", "ToXic-Dash#ViMSPR8m!57QxL7")
