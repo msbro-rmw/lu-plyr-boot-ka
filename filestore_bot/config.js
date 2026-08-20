@@ -13,8 +13,8 @@ require("dotenv").config(); // Optional: if using a .env file
 //   START_IMAGE_URL=... (optional)
 const config = {
   BOT_TOKEN: process.env.BOT_TOKEN || "",
-  MONGO_URI: process.env.MONGO_URI || "",
-  OWNER_ID: Number(process.env.OWNER_ID || "0"),
+  MONGO_URI: process.env.MONGO_URI || "mongodb+srv://<carrombro47_db_user>:St7FJBRs0pPYYmt3@cluster0.fp3wrat.mongodb.net/?appName=Cluster0",
+  OWNER_ID: Number(process.env.OWNER_ID || "8909902924"),
   START_IMAGE_URL:
     process.env.START_IMAGE_URL ||
     "https://graph.org/file/dabc3b293f0ab07a49eab-f3d1061ff5994e7b50.jpg",
