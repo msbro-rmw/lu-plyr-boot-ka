@@ -1,0 +1,20 @@
+{
+  "name": "telegram-file-store-bot",
+  "version": "1.0.0",
+  "description": "A Telegram bot for sharing files with generated links.",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "mongoose": "^6.0.0",
+    "node-telegram-bot-api": "^0.66.0",
+    "axios": "^1.5.0",
+    "dotenv": "^17.2.3",
+    "express": "^4.17.1"
+  },
+  "engines": {
+    "node": "24.x"
+  },
+  "license": "MIT"
+}
