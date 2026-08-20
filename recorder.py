@@ -53,6 +53,7 @@ import os
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from urllib.parse import urljoin, urlparse, urlunparse
 
 import requests
@@ -219,10 +220,15 @@ def _probe_duration(path: str):
         return None
 
 
-def _download_full_video(download_url: str, raw_path: str) -> bool:
+def _download_full_video(download_url: str, raw_path: str, duration_limit=None) -> bool:
     """Ek hi shot mein poora VOD download karo (non-realtime — playlist
-    khud finite/ended hai isliye ffmpeg jitni fast ho utni fast kheenchta hai)."""
-    return _run_ffmpeg([
+    khud finite/ended hai isliye ffmpeg jitni fast ho utni fast kheenchta hai).
+
+    duration_limit (seconds, optional): sirf "Manual End Live" flow ke liye —
+    agar diya gaya hai to ffmpeg sirf itne hi seconds ka video download
+    karega (`-t`), chahe upstream master playlist usse lambi ho (e.g. agar
+    owner ne End Live dabaya lekin upstream live abhi bhi chal rahi ho)."""
+    args = [
         "-y",
         "-headers", FFMPEG_HEADERS,
         "-reconnect", "1",
@@ -230,10 +236,15 @@ def _download_full_video(download_url: str, raw_path: str) -> bool:
         "-reconnect_on_network_error", "1",
         "-reconnect_delay_max", "5",
         "-i", download_url,
+    ]
+    if duration_limit:
+        args += ["-t", str(int(duration_limit))]
+    args += [
         "-c", "copy",
         "-movflags", "+faststart",
         raw_path,
-    ])
+    ]
+    return _run_ffmpeg(args)
 
 
 def _make_480p(raw_path: str, out_path: str) -> bool:
@@ -310,8 +321,11 @@ def _current_gen(col, name):
     return (doc or {}).get("watch_gen", 0)
 
 
-def _run_pipeline(name: str, media_url: str, col) -> bool:
-    """Live already ended maan ke — download + convert + upload. True on success."""
+def _run_pipeline(name: str, media_url: str, col, duration_limit=None) -> bool:
+    """Live already ended maan ke — download + convert + upload. True on success.
+
+    duration_limit: sirf manual "End Live Now" flow se aata hai (dekho
+    force_end_live) — utne hi seconds ka video download hota hai."""
     raw_path = os.path.join(RECORDINGS_DIR, f"{name}-raw.mp4")
     out_path = os.path.join(RECORDINGS_DIR, f"{name}-480p.mp4")
 
@@ -319,14 +333,14 @@ def _run_pipeline(name: str, media_url: str, col) -> bool:
 
     download_url = _resolve_download_url(media_url)
 
-    ok = _download_full_video(download_url, raw_path)
+    ok = _download_full_video(download_url, raw_path, duration_limit)
     if not ok or not os.path.exists(raw_path) or os.path.getsize(raw_path) == 0:
         print(f"[recorder] {name}: master VOD download failed, trying raw fallback")
         # Agar master trick fail ho gaya download ke time bhi, ek aakhri
         # koshish seedhe original media_url (jo abhi bhi ENDLIST wale
         # bache hue window ke saath hai) se karo.
         if download_url != media_url:
-            ok = _download_full_video(media_url, raw_path)
+            ok = _download_full_video(media_url, raw_path, duration_limit)
         if not ok or not os.path.exists(raw_path) or os.path.getsize(raw_path) == 0:
             return False
 
@@ -411,6 +425,65 @@ def start_recording(name: str, original_url: str, col) -> bool:
         _active[name] = {"thread": t, "gen": gen}
         t.start()
         return True
+
+
+def force_end_live(name: str, col) -> bool:
+    """MANUAL "END LIVE NOW" — owner dashboard se trigger hota hai.
+
+    Natural #EXT-X-ENDLIST detection ka wait nahi karte — turant "live
+    khatam" maan lete hain. Us waqt tak class kitni chali thi (`created_at`
+    se elapsed seconds nikaal ke) sirf utne hi duration tak video
+    download/trim karte hain (ffmpeg `-t`) — taaki agar upstream live
+    actually End Live ke baad bhi chalti rahe, to bhi hamare paas sirf
+    "End Live" tak ka hi content aaye, poori (aage ki) recording nahi.
+
+    URL delete/expire NAHI hota — sirf naya download+convert+upload
+    pipeline background mein turant start ho jaata hai (jaisa automatic
+    flow karta hai jab #EXT-X-ENDLIST khud aata hai)."""
+    doc = col.find_one({"_id": name})
+    if not doc:
+        return False
+    original_url = doc.get("original_url")
+    if not original_url:
+        return False
+
+    elapsed = None
+    created_at = doc.get("created_at")
+    if created_at:
+        now = datetime.now(timezone.utc)
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        # +20s buffer — CDN ko live segments ko archived VOD playlist mein
+        # daalne mein thoda lag hota hai, isliye chhoti si cushion.
+        elapsed = max(5, int((now - created_at).total_seconds()) + 20)
+
+    # Agar automatic background watcher already chal raha hai to usko
+    # supersede karo (watch_gen bump) taaki wo apna kaam khud rok de aur
+    # is manual pipeline se race na kare.
+    col.update_one({"_id": name}, {"$inc": {"watch_gen": 1}})
+    my_gen = _current_gen(col, name)
+    with _active_lock:
+        _active.pop(name, None)
+
+    _set(col, name, status="PROCESSING")
+
+    def _run():
+        media_url = _resolve_media_url(original_url)
+        for attempt in range(1, MAX_PIPELINE_RETRIES + 1):
+            if _current_gen(col, name) != my_gen:
+                return
+            try:
+                if _run_pipeline(name, media_url, col, duration_limit=elapsed):
+                    return
+            except Exception as e:
+                print(f"[recorder] manual end-live pipeline error for {name} (attempt {attempt}): {e}")
+            if attempt < MAX_PIPELINE_RETRIES:
+                time.sleep(15)
+        _set(col, name, status="ERROR", error="Manual End Live: download/upload pipeline failed after retries")
+        print(f"[recorder] ❌ {name}: manual end-live pipeline permanently failed")
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
 
 
 def resume_pending(col):

@@ -16,8 +16,8 @@ from flask import (
 from utils.db import get_db
 from utils.text import display_title
 from utils.linkgen import generate_live_link, LinkGenError
-from utils.config import PUBLIC_BASE_URL, OWNER_NAME, ADMIN_KEYS, VIP_KEYS
-from recorder import start_recording, resume_pending
+from utils.config import PUBLIC_BASE_URL, OWNER_NAME, ADMIN_KEYS, VIP_KEYS, END_LIVE_CONFIRM_KEY
+from recorder import start_recording, resume_pending, force_end_live
 
 RECORDINGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
@@ -346,6 +346,84 @@ def generated(name):
     return render_template(
         "generated.html", name=name, public_link=public_link, status=doc.get("status")
     )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  OWNER DASHBOARD (per-lecture) — secret 📐 icon (player.html) se access hota
+#  hai. Page-level access wahi admin session use karta hai jo /login se
+#  banta hai (admin_required) — koi alag nickname/key login nahi chahiye,
+#  isliye student ke liye ye page bina admin session ke sirf redirect karta
+#  hai, kuch bhi leak nahi hota.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@flask_app.route("/owner/<name>")
+@admin_required
+def owner_lecture_dashboard(name):
+    doc = lectures_col.find_one({"_id": name}, {"_id": 1})
+    if not doc:
+        return redirect(url_for("index"))
+    return render_template(
+        "owner_lecture_dashboard.html", name=name, title=display_title(name)
+    )
+
+
+@flask_app.route("/api/owner/<name>/info")
+@admin_required
+def api_owner_info(name):
+    doc = lectures_col.find_one({"_id": name})
+    if not doc:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+
+    status = doc.get("status", "LIVE")
+    created_at = doc.get("created_at")
+
+    if status == "READY" and doc.get("duration"):
+        elapsed = int(doc["duration"])
+    elif created_at:
+        elapsed = int((datetime.utcnow() - created_at).total_seconds())
+    else:
+        elapsed = 0
+
+    resp = {
+        "ok": True,
+        "title": display_title(name),
+        "status": status,
+        "elapsed_seconds": max(0, elapsed),
+        "live_link": f"{PUBLIC_BASE_URL}/{name}",
+        "original_link": doc.get("original_url", ""),
+    }
+    if status == "READY":
+        bot_username = os.environ.get("TELEGRAM_BOT_USERNAME", "PWSENSEI_FileStoreBot")
+        resp["watch_url"] = f"{PUBLIC_BASE_URL}/recordings/{name}-480p.mp4"
+        resp["download_url"] = f"https://t.me/{bot_username}?start={doc.get('token')}"
+    elif status == "ERROR":
+        resp["error"] = doc.get("error", "Processing failed")
+    return jsonify(resp)
+
+
+@flask_app.route("/api/owner/<name>/end-live", methods=["POST"])
+@admin_required
+def api_owner_end_live(name):
+    data = request.get_json(silent=True) or {}
+    confirm_key = (data.get("confirm_key") or "").strip()
+    if confirm_key != END_LIVE_CONFIRM_KEY:
+        return jsonify({"ok": False, "error": "Invalid Confirmation Key"}), 401
+
+    doc = lectures_col.find_one({"_id": name})
+    if not doc:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+
+    status = doc.get("status", "LIVE")
+    if status != "LIVE":
+        return jsonify(
+            {"ok": False, "error": f"Class is already '{status}' — can't End Live again."}
+        ), 409
+
+    started = force_end_live(name, lectures_col)
+    if not started:
+        return jsonify({"ok": False, "error": "Could not end live — original link missing."}), 500
+
+    return jsonify({"ok": True, "status": "PROCESSING"})
 
 
 @flask_app.route("/health")
