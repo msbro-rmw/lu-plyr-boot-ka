@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Owner Dashboard — {{ title }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+
+<div class="owner-page">
+  <p class="owner-heading">OWNER DASHBOARD</p>
+  <p class="owner-subheading" id="ownerTitle">{{ title }}</p>
+
+  <div class="owner-info-list">
+    <div class="owner-info-row">
+      <span class="owner-info-label">Live Class titel</span>
+      <span class="owner-info-value" id="infoTitle">{{ title }}</span>
+    </div>
+    <div class="owner-info-row">
+      <span class="owner-info-label">Live class timelabel</span>
+      <span class="owner-info-value" id="infoTime">—</span>
+    </div>
+    <div class="owner-info-row">
+      <span class="owner-info-label">Status</span>
+      <span class="owner-info-value" id="infoStatus">—</span>
+    </div>
+  </div>
+
+  <div class="owner-link-list">
+    <div class="owner-link-row">
+      <div class="owner-link-text">
+        <span class="owner-info-label">Live Link</span>
+        <span class="owner-link-value" id="liveLinkText">—</span>
+      </div>
+      <button type="button" class="copy-btn copy-orange" id="copyLiveLinkBtn">Copy</button>
+    </div>
+    <div class="owner-link-row">
+      <div class="owner-link-text">
+        <span class="owner-info-label">Original Link</span>
+        <span class="owner-link-value" id="originalLinkText">—</span>
+      </div>
+      <button type="button" class="copy-btn copy-red" id="copyOriginalLinkBtn">Copy</button>
+    </div>
+  </div>
+
+  <div class="owner-btn-list">
+    <button type="button" id="endLiveBtn" class="btn btn-red owner-end-live-btn">
+      🔴 END LIVE NOW
+    </button>
+    <p id="alreadyEndedNote" class="name-hint hidden" style="text-align:center;"></p>
+
+    <button type="button" id="backBtn" class="owner-btn owner-btn-back">← Back</button>
+  </div>
+</div>
+
+<!-- ── End Live: confirmation key ───────────────────────────────────────── -->
+<div id="endLiveKeyModal" class="modal hidden">
+  <div class="modal-card">
+    <h2>Please Enter Confirmation Key</h2>
+    <input type="password" id="endLiveKeyInput" class="login-input" placeholder="Confirmation Key" autocomplete="off">
+    <p id="endLiveKeyError" class="gate-error hidden"></p>
+    <div class="modal-actions">
+      <button id="endLiveBackBtn" class="btn btn-ghost btn-sm">Back</button>
+      <button id="endLiveConfirmBtn" class="btn btn-primary btn-sm">End Live</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script>
+  const LECTURE_NAME = {{ name | tojson }};
+</script>
+<script src="{{ url_for('static', filename='js/owner_lecture_dashboard.js') }}"></script>
+</body>
+</html>

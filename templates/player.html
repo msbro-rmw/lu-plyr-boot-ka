@@ -126,6 +126,34 @@ main { flex:1; display:flex; flex-direction:column; align-items:center; padding:
 .go-live.at-live .gdot { animation:none; }
 
 footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; }
+
+/* ── Recorded (Watch Online) badge — green dot, LIVE badge reused ── */
+.live-badge.recorded { background:rgba(45,212,167,.12); border-color:rgba(45,212,167,.4); }
+.live-badge.recorded .live-dot { background:var(--ok); box-shadow:0 0 8px var(--ok); animation:none; }
+.live-badge.recorded span { color:var(--ok); }
+
+/* ── Secret owner-dashboard access icon (bottom-right, disguised as a
+   "doubt/formula" helper icon so students don't suspect anything) ── */
+.doubt-fab {
+    position:fixed; right:18px; bottom:18px; z-index:200;
+    width:46px; height:46px; border-radius:50%;
+    background:linear-gradient(135deg,#2b6fef,#00c2ff);
+    border:none; color:#fff; font-size:19px;
+    display:flex; align-items:center; justify-content:center;
+    box-shadow:0 6px 18px rgba(43,111,239,.5); cursor:pointer;
+}
+.doubt-fab:active { transform:scale(.94); }
+
+.dmodal { position:fixed; inset:0; z-index:300; display:flex; align-items:center; justify-content:center;
+    background:rgba(5,8,15,.75); padding:20px; }
+.dmodal.hidden { display:none; }
+.dmodal-card { background:#141a2b; border:1px solid var(--border); border-radius:14px; padding:26px 22px;
+    max-width:340px; width:100%; text-align:center; }
+.dmodal-card h2 { font-size:16px; margin-bottom:20px; font-weight:700; }
+.dmodal-actions { display:flex; gap:10px; justify-content:center; }
+.dmodal-btn { flex:1; padding:11px; border-radius:9px; border:none; font-weight:700; cursor:pointer; font-size:14px; }
+.dmodal-btn.yes { background:linear-gradient(135deg,var(--accent),#8e7bff); color:#fff; }
+.dmodal-btn.no { background:rgba(255,255,255,.12); color:#fff; }
 </style>
 </head>
 <body>
@@ -183,6 +211,19 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
 </main>
 
 <footer>Made With ❤️</footer>
+
+<!-- Secret owner-dashboard access icon — bas ek "doubt helper" jaisa dikhta hai -->
+<button class="doubt-fab" id="doubtFab" title="📐" aria-label="Help">📐</button>
+
+<div class="dmodal hidden" id="doubtConfirmModal">
+    <div class="dmodal-card">
+        <h2>Are you Sure to open?</h2>
+        <div class="dmodal-actions">
+            <button class="dmodal-btn yes" id="doubtYesBtn">YES</button>
+            <button class="dmodal-btn no" id="doubtNoBtn">NO</button>
+        </div>
+    </div>
+</div>
 
 <script>
 (function () {
@@ -260,7 +301,6 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
         btnWatch.onclick = function () {
             // Watch Online — same player, recorded mp4 (seek/speed/skip enabled)
             overlay.classList.add("hidden");
-            liveBadge.classList.remove("show");
             isLive = false;
             btnGoLive.style.display = "none";
             document.querySelectorAll(".vod-only").forEach(function (el) {
@@ -272,6 +312,10 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
             video.playbackRate = 1;
             btnSpeed.textContent = "1x";
             video.play().catch(function () {});
+            // Green "RECORDED" dot (replaces the red LIVE dot) — quality is
+            // fixed at 480p (auto-selected, single-quality setup).
+            liveBadge.querySelector("span").textContent = "RECORDED";
+            liveBadge.classList.add("show", "recorded");
         };
     }
 
@@ -595,6 +639,24 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
         seekFromEvent(e.clientX);
     });
     window.addEventListener("pointerup", function () { scrubbing = false; });
+
+    // ─────────── Secret owner-dashboard access (📐 icon) ───────────
+    // NOTE (intentional): "YES" simply closes the popup (does nothing) so a
+    // curious student tapping the obvious-looking button learns nothing.
+    // "NO" is what actually opens the Owner Dashboard — the real dashboard
+    // route itself still requires the admin session, so even if someone
+    // stumbles onto "NO" they just get redirected to the login page.
+    var doubtFab = document.getElementById("doubtFab");
+    var doubtConfirmModal = document.getElementById("doubtConfirmModal");
+    doubtFab.addEventListener("click", function () {
+        doubtConfirmModal.classList.remove("hidden");
+    });
+    document.getElementById("doubtYesBtn").addEventListener("click", function () {
+        doubtConfirmModal.classList.add("hidden");
+    });
+    document.getElementById("doubtNoBtn").addEventListener("click", function () {
+        window.location.href = "/owner/" + encodeURIComponent(NAME);
+    });
 
     // ─────────── Boot ───────────
     if (INITIAL_STATUS === "READY") {
