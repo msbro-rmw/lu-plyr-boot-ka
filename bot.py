@@ -54,10 +54,10 @@ from utils.subscription import (
 )
 from utils.db import get_db
 
-API_ID = os.environ.get("TELEGRAM_API_ID", "22518279").strip()
-API_HASH = os.environ.get("TELEGRAM_API_HASH", "61e5cc94bc5e6318643707054e54caf4").strip()
+API_ID = os.environ.get("TELEGRAM_API_ID", "").strip()
+API_HASH = os.environ.get("TELEGRAM_API_HASH", "").strip()
 BOT_TOKEN = os.environ.get("LIVE_BOT_TOKEN", "").strip()
-OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "8909902924").strip()
+OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "").strip()
 FORCE_SUB_CHANNEL = os.environ.get("FORCE_SUB_CHANNEL", "PW_SENSEI").strip().lstrip("@")
 
 START_IMAGE_URL = "https://graph.org/file/96f7e50b37c6bd4dc5071-5eadeaf54110b8c34a.jpg"
@@ -681,25 +681,30 @@ def _run_bot(lectures_col):
         me = await app.get_me()
         print(f"[bot] ✅ CONNECTED as @{me.username} (id={me.id}) — listening for /start, /Live now.")
         try:
-            from pyrogram import idle
-            await idle()
-        except ImportError:
-            # Bahut purana pyrogram version jisme idle() nahi hai — bas
-            # process alive rakho jab tak thread khatam na ho.
-            while True:
-                await asyncio.sleep(3600)
+            # IMPORTANT: deliberately NOT using pyrogram's idle() helper
+            # here. idle() internally calls signal.signal() to register
+            # SIGINT/SIGTERM handlers — and Python only allows registering
+            # signal handlers on the MAIN thread of the MAIN interpreter.
+            # This bot runs in a background thread (Flask/gunicorn owns
+            # the main thread), so idle() was raising
+            # `ValueError: signal only works in main thread of the main
+            # interpreter` IMMEDIATELY, every single time, right after
+            # connecting — client connects, idle() instantly crashes,
+            # finally-block disconnects it, retry loop tries again... a
+            # tight connect→crash→disconnect loop forever. THIS — not
+            # FloodWait, not leaked sessions — was the actual reason the
+            # bot never responded to anything. A plain never-resolving
+            # asyncio.Event().wait() blocks exactly the same way idle()
+            # would (forever, until this task/thread dies with the
+            # process) without touching signal handlers at all.
+            await asyncio.Event().wait()
         finally:
-            # CRITICAL: chahe idle() normal shutdown se return ho ya beech
-            # mein koi exception se bahar nikle (network blip, Telegram
-            # side hiccup, etc.) — app.stop() HAMESHA chalna chahiye.
-            # Pehle ye sirf "clean exit" path par hi chalta tha, isliye
-            # ek exception ke baad retry-loop ek NAYA Client bana deta tha
-            # jabki purana (same LIVE_BOT_TOKEN wala) session abhi bhi
-            # Telegram se connected rehta tha — dono independently har
-            # update receive/reply karte the, isi wajah se ek hi command
-            # ka jawab kai baar (leaked sessions ki ginti jitni baar) aata
-            # tha. Ab koi bhi exit path ho, purana session pehle poori
-            # tarah band hota hai, phir hi retry loop dobara try karta hai.
+            # CRITICAL: chahe upar wala wait() kisi bhi wajah se khatam ho
+            # (exception, cancellation, etc.) — app.stop() HAMESHA chalna
+            # chahiye, warna purana session Telegram se connected reh
+            # jaata hai aur retry-loop ek naya session bana deta hai (dono
+            # phir independently har update handle karte, isi se pehle
+            # "har command ka jawab kai baar aata tha" wala bug hua tha).
             try:
                 await app.stop()
             except Exception:
