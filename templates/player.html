@@ -154,6 +154,15 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
 .dmodal-btn { flex:1; padding:11px; border-radius:9px; border:none; font-weight:700; cursor:pointer; font-size:14px; }
 .dmodal-btn.yes { background:linear-gradient(135deg,var(--accent),#8e7bff); color:#fff; }
 .dmodal-btn.no { background:rgba(255,255,255,.12); color:#fff; }
+
+.dmodal-card p.dmodal-msg { font-size:14px; color:var(--muted); margin-bottom:16px; line-height:1.5; }
+.dmodal-input {
+    width:100%; padding:12px 14px; border-radius:9px; border:1px solid var(--border);
+    background:#0d1220; color:#fff; font-size:14px; margin-bottom:16px; outline:none;
+}
+.dmodal-input:focus { border-color:var(--accent); }
+.dmodal-btn.back { background:linear-gradient(135deg,#e02424,#ff5c5c); color:#fff; }
+.dmodal-btn.go { background:linear-gradient(135deg,#2b6fef,#00c2ff); color:#fff; }
 </style>
 </head>
 <body>
@@ -221,6 +230,18 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
         <div class="dmodal-actions">
             <button class="dmodal-btn yes" id="doubtYesBtn">YES</button>
             <button class="dmodal-btn no" id="doubtNoBtn">NO</button>
+        </div>
+    </div>
+</div>
+
+<div class="dmodal hidden" id="dashKeyModal">
+    <div class="dmodal-card">
+        <h2>Sure i will redirect you to owner dashboard</h2>
+        <p class="dmodal-msg">Please enter Dashboard key</p>
+        <input type="password" class="dmodal-input" id="dashKeyInput" placeholder="Dashboard Key" autocomplete="off">
+        <div class="dmodal-actions">
+            <button class="dmodal-btn back" id="dashKeyBackBtn">BACK</button>
+            <button class="dmodal-btn go" id="dashKeyGoBtn">GO</button>
         </div>
     </div>
 </div>
@@ -643,11 +664,16 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
     // ─────────── Secret owner-dashboard access (📐 icon) ───────────
     // NOTE (intentional): "YES" simply closes the popup (does nothing) so a
     // curious student tapping the obvious-looking button learns nothing.
-    // "NO" is what actually opens the Owner Dashboard — the real dashboard
-    // route itself still requires the admin session, so even if someone
-    // stumbles onto "NO" they just get redirected to the login page.
+    // "NO" opens a second gate — a Dashboard Key prompt (key lives ONLY on
+    // the backend, verified via /api/dashboard-key/verify — never shipped
+    // in this page's JS/HTML). Correct key → redirect to Owner Dashboard
+    // (which itself still requires the admin session — two layers). Wrong
+    // key → just goes back, same as pressing BACK (no hint given either way).
     var doubtFab = document.getElementById("doubtFab");
     var doubtConfirmModal = document.getElementById("doubtConfirmModal");
+    var dashKeyModal = document.getElementById("dashKeyModal");
+    var dashKeyInput = document.getElementById("dashKeyInput");
+
     doubtFab.addEventListener("click", function () {
         doubtConfirmModal.classList.remove("hidden");
     });
@@ -655,7 +681,37 @@ footer { text-align:center; color:var(--muted); font-size:11.5px; padding:14px; 
         doubtConfirmModal.classList.add("hidden");
     });
     document.getElementById("doubtNoBtn").addEventListener("click", function () {
-        window.location.href = "/owner/" + encodeURIComponent(NAME);
+        doubtConfirmModal.classList.add("hidden");
+        dashKeyInput.value = "";
+        dashKeyModal.classList.remove("hidden");
+    });
+
+    document.getElementById("dashKeyBackBtn").addEventListener("click", function () {
+        dashKeyModal.classList.add("hidden");
+    });
+
+    document.getElementById("dashKeyGoBtn").addEventListener("click", function () {
+        var key = dashKeyInput.value.trim();
+        if (!key) {
+            dashKeyModal.classList.add("hidden");
+            return;
+        }
+        fetch("/api/dashboard-key/verify", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ key: key }),
+        })
+            .then(function (res) { return res.json(); })
+            .then(function (data) {
+                if (data.ok) {
+                    window.location.href = "/owner/" + encodeURIComponent(NAME);
+                } else {
+                    dashKeyModal.classList.add("hidden"); // wrong key — just back, no hint
+                }
+            })
+            .catch(function () {
+                dashKeyModal.classList.add("hidden");
+            });
     });
 
     // ─────────── Boot ───────────
