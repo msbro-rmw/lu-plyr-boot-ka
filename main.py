@@ -16,7 +16,10 @@ from flask import (
 from utils.db import get_db
 from utils.text import display_title
 from utils.linkgen import generate_live_link, LinkGenError
-from utils.config import PUBLIC_BASE_URL, OWNER_NAME, ADMIN_KEYS, VIP_KEYS, END_LIVE_CONFIRM_KEY
+from utils.config import (
+    PUBLIC_BASE_URL, OWNER_NAME, ADMIN_KEYS, VIP_KEYS,
+    END_LIVE_CONFIRM_KEY, DASHBOARD_ACCESS_KEY,
+)
 from recorder import start_recording, resume_pending, force_end_live
 
 RECORDINGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
@@ -424,6 +427,49 @@ def api_owner_end_live(name):
         return jsonify({"ok": False, "error": "Could not end live — original link missing."}), 500
 
     return jsonify({"ok": True, "status": "PROCESSING"})
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Secret 📐 icon (player.html) → "NO" → Dashboard Key gate.
+#  Key sirf yahin (.py, backend) mein hai — kabhi JS/HTML mein nahi. Player
+#  page sirf is endpoint ko call karta hai; sahi key par hi /owner/<name>
+#  par redirect karta hai (jo khud admin_required session se bhi protected
+#  hai — do layers).
+# ═══════════════════════════════════════════════════════════════════════════
+
+_dash_key_attempts = {}  # ip -> [failed_count, locked_until_epoch]
+_dash_key_attempts_lock = threading.Lock()
+_DASH_KEY_MAX_ATTEMPTS = 8
+_DASH_KEY_LOCKOUT_SECONDS = 300
+
+
+@flask_app.route("/api/dashboard-key/verify", methods=["POST"])
+def api_dashboard_key_verify():
+    ip = request.headers.get("X-Forwarded-For", request.remote_addr or "unknown").split(",")[0].strip()
+    now = time.time()
+
+    with _dash_key_attempts_lock:
+        failed, locked_until = _dash_key_attempts.get(ip, [0, 0])
+        if now < locked_until:
+            return jsonify({"ok": False, "error": "Too many attempts, try again later."}), 429
+
+    data = request.get_json(silent=True) or {}
+    key = (data.get("key") or "").strip()
+
+    if key and key == DASHBOARD_ACCESS_KEY:
+        with _dash_key_attempts_lock:
+            _dash_key_attempts.pop(ip, None)
+        return jsonify({"ok": True})
+
+    with _dash_key_attempts_lock:
+        failed, locked_until = _dash_key_attempts.get(ip, [0, 0])
+        failed += 1
+        if failed >= _DASH_KEY_MAX_ATTEMPTS:
+            locked_until = now + _DASH_KEY_LOCKOUT_SECONDS
+            failed = 0
+        _dash_key_attempts[ip] = [failed, locked_until]
+
+    return jsonify({"ok": False}), 401
 
 
 @flask_app.route("/health")

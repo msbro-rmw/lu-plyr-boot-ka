@@ -38,9 +38,12 @@ bot chupchaap start nahi hota — website par koi asar nahi padta.
 """
 import os
 import re
+import socket
 import threading
 import time
-from datetime import datetime, timezone
+import traceback
+import uuid
+from datetime import datetime, timedelta, timezone
 
 from utils.config import PUBLIC_BASE_URL, VIP_KEYS
 from utils.linkgen import generate_live_link, LinkGenError
@@ -51,10 +54,10 @@ from utils.subscription import (
 )
 from utils.db import get_db
 
-API_ID = os.environ.get("TELEGRAM_API_ID", "38498066").strip()
-API_HASH = os.environ.get("TELEGRAM_API_HASH", "c9696114751feacdeb1b4487f5839a1a").strip()
+API_ID = os.environ.get("TELEGRAM_API_ID", "").strip()
+API_HASH = os.environ.get("TELEGRAM_API_HASH", "").strip()
 BOT_TOKEN = os.environ.get("LIVE_BOT_TOKEN", "").strip()
-OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "8909902924").strip()
+OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "").strip()
 FORCE_SUB_CHANNEL = os.environ.get("FORCE_SUB_CHANNEL", "PW_SENSEI").strip().lstrip("@")
 
 START_IMAGE_URL = "https://graph.org/file/96f7e50b37c6bd4dc5071-5eadeaf54110b8c34a.jpg"
@@ -68,11 +71,28 @@ _pending = {}
 _pending_lock = threading.Lock()
 
 # Guard so start_bot_in_background() can never spin up a second bot thread
-# in the same process (belt-and-suspenders against the root cause of the
-# "every command answered N times" bug — see _dedupe_* below for the
-# second layer of protection).
+# WITHIN THE SAME PROCESS (belt-and-suspenders — the real cross-process
+# protection is the Mongo leader-lock below, LEADER_LOCK_* constants).
 _bot_thread_lock = threading.Lock()
 _bot_thread_started = False
+
+# ── Cross-process leader lock (Mongo-backed) ────────────────────────────
+# THE REAL FIX for "every command answered N times": if the hosting
+# platform (Render etc.) ever runs more than ONE process for this app
+# (multiple gunicorn workers, a rolling-deploy overlap, a stuck old
+# instance, etc.), EACH process would otherwise open its OWN MTProto
+# session on the SAME LIVE_BOT_TOKEN — and Telegram delivers every update
+# to ALL active sessions of a bot token independently, so every command
+# gets answered once per running session. A lock inside one process can
+# never prevent that; only a lock that ALL processes check (i.e. stored in
+# the shared MongoDB) can. Exactly one process "wins" the lock and runs
+# the Telegram client; every other process politely stays silent and just
+# keeps checking whether the leader has died (stale heartbeat) so it can
+# take over automatically if it does.
+LEADER_LOCK_COLLECTION = "bot_leader_lock"
+LEADER_LOCK_ID = "live_link_bot"
+LEADER_LOCK_STALE_SECONDS = 45      # leader maana jaata hai "mar gaya" agar itni der heartbeat na aaye
+LEADER_LOCK_HEARTBEAT_SECONDS = 15  # leader har itni der mein apna heartbeat update karta hai
 
 
 def _is_owner(user_id: int) -> bool:
@@ -131,6 +151,82 @@ def _dedupe_callback(func):
     return wrapper
 
 
+def _try_acquire_leader_lock(db, holder_id: str) -> bool:
+    """Atomic — True agar YE process ab leader ban gaya (ya pehle se hai),
+    False agar koi doosra process already fresh leader hai."""
+    from pymongo import ReturnDocument
+    from pymongo.errors import DuplicateKeyError
+
+    col = db[LEADER_LOCK_COLLECTION]
+    now = datetime.now(timezone.utc)
+    stale_before = now - timedelta(seconds=LEADER_LOCK_STALE_SECONDS)
+    try:
+        result = col.find_one_and_update(
+            {
+                "_id": LEADER_LOCK_ID,
+                "$or": [
+                    {"heartbeat": {"$lt": stale_before}},
+                    {"heartbeat": {"$exists": False}},
+                ],
+            },
+            {"$set": {"holder": holder_id, "heartbeat": now}},
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        return bool(result) and result.get("holder") == holder_id
+    except DuplicateKeyError:
+        # Race: kisi aur process ne isi waqt fresh lock le liya — hum haare.
+        return False
+    except Exception as e:
+        # Mongo hi down ho gaya ho to bot ko hamesha ke liye chup mat karo —
+        # best-effort fail-open (single-process deployments ke liye ye hi
+        # sahi/safe default hai; multi-worker mein rare duplicate se better
+        # hai ki bot chalta rahe).
+        print(f"[bot] ⚠️ leader-lock check errored ({e}) — proceeding without lock (fail-open).")
+        return True
+
+
+def _leader_heartbeat_loop(db, holder_id: str, stop_event: threading.Event):
+    col = db[LEADER_LOCK_COLLECTION]
+    while not stop_event.is_set():
+        try:
+            col.update_one(
+                {"_id": LEADER_LOCK_ID, "holder": holder_id},
+                {"$set": {"heartbeat": datetime.now(timezone.utc)}},
+            )
+        except Exception:
+            pass
+        stop_event.wait(LEADER_LOCK_HEARTBEAT_SECONDS)
+
+
+def _compute_retry_backoff(e: Exception, attempt: int) -> int:
+    """Kitni der wait karke retry karna hai — FloodWait ho to Telegram ne
+    jitna bola EXACTLY utna hi (na kam, na zyada baar-baar bomb-baazi karo,
+    warna Telegram flood-wait aur badha deta hai — yehi asli wajah thi jab
+    bot bilkul chup ho gaya tha: pehle 60s cap tha jo har baar Telegram ke
+    flood-wait ko dobara violate karke aur lamba bana raha tha)."""
+    err_name = type(e).__name__
+    if err_name == "FloodWait":
+        wait = int(getattr(e, "value", None) or getattr(e, "x", None) or 30)
+        print(f"[bot] ⏳ Telegram FloodWait — bilkul {wait}s wait karenge (jaisa Telegram ne bola), "
+              f"jaldi retry NAHI karenge (warna wait aur badh jaata hai).")
+        return wait
+
+    hint = ""
+    if err_name in ("AccessTokenInvalid", "AccessTokenExpired"):
+        hint = " → LIVE_BOT_TOKEN galat/expired hai, BotFather se dobara check karo."
+    elif err_name == "ApiIdInvalid":
+        hint = " → TELEGRAM_API_ID / TELEGRAM_API_HASH galat hai, my.telegram.org se dobara check karo."
+    elif err_name == "ApiIdPublishedFlood":
+        hint = " → ye API_ID/HASH public leak ho chuka hai, my.telegram.org se naya generate karo."
+    print(f"[bot] ❌ attempt #{attempt} failed: {err_name}: {e}{hint}")
+    if err_name not in ("AccessTokenInvalid", "AccessTokenExpired", "ApiIdInvalid", "ApiIdPublishedFlood"):
+        traceback.print_exc()  # unrecognised error — poora traceback Render logs mein daalo
+    wait = min(300, 10 * attempt)
+    print(f"[bot] retrying in {wait}s…")
+    return wait
+
+
 def start_bot_in_background(lectures_col):
     """main.py isko call karta hai app boot hote hi."""
     global _bot_thread_started
@@ -162,10 +258,32 @@ def start_bot_in_background(lectures_col):
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        stop_heartbeat = None
+        try:
+            db = get_db()
+            holder_id = f"{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:6]}"
+
+            waited_log = False
+            while not _try_acquire_leader_lock(db, holder_id):
+                if not waited_log:
+                    print("[bot] ⏸️  another process/worker already holds the Live Link Bot "
+                          "leader-lock — this process will stay silent (checking again every "
+                          "20s in case it needs to take over).")
+                    waited_log = True
+                time.sleep(20)
+
+            print(f"[bot] 🔑 leader-lock acquired (holder={holder_id}) — this process runs the bot.")
+            stop_heartbeat = threading.Event()
+            threading.Thread(
+                target=_leader_heartbeat_loop, args=(db, holder_id, stop_heartbeat), daemon=True
+            ).start()
+        except Exception as e:
+            print(f"[bot] ⚠️ leader-lock setup failed ({e}) — proceeding without it (fail-open).")
+
         # Retry loop — koi bhi startup/connection error ho (bad token,
-        # temporary network issue, Telegram side hiccup) to bot HAMESHA ke
-        # liye chup nahi ho jaata. Har attempt clearly logged hoti hai
-        # taaki Render logs dekh kar exact wajah pata chal jaaye.
+        # temporary network issue, Telegram side hiccup, FloodWait) to bot
+        # HAMESHA ke liye chup nahi ho jaata. Har attempt clearly logged
+        # hoti hai taaki Render logs dekh kar exact wajah pata chal jaaye.
         attempt = 0
         while True:
             attempt += 1
@@ -176,18 +294,11 @@ def start_bot_in_background(lectures_col):
                 print("[bot] stopped (shutdown signal received).")
                 break
             except Exception as e:
-                err_name = type(e).__name__
-                hint = ""
-                if err_name in ("AccessTokenInvalid", "AccessTokenExpired"):
-                    hint = " → LIVE_BOT_TOKEN galat/expired hai, BotFather se dobara check karo."
-                elif err_name in ("ApiIdInvalid",):
-                    hint = " → TELEGRAM_API_ID / TELEGRAM_API_HASH galat hai, my.telegram.org se dobara check karo."
-                elif err_name in ("ApiIdPublishedFlood",):
-                    hint = " → ye API_ID/HASH public leak ho chuka hai, my.telegram.org se naya generate karo."
-                print(f"[bot] ❌ attempt #{attempt} failed: {err_name}: {e}{hint}")
-                wait = min(60, 5 * attempt)
-                print(f"[bot] retrying in {wait}s…")
+                wait = _compute_retry_backoff(e, attempt)
                 time.sleep(wait)
+
+        if stop_heartbeat is not None:
+            stop_heartbeat.set()
 
     threading.Thread(target=_run, daemon=True).start()
 
