@@ -54,10 +54,10 @@ from utils.subscription import (
 )
 from utils.db import get_db
 
-API_ID = os.environ.get("TELEGRAM_API_ID", "").strip()
-API_HASH = os.environ.get("TELEGRAM_API_HASH", "").strip()
+API_ID = os.environ.get("TELEGRAM_API_ID", "22518279").strip()
+API_HASH = os.environ.get("TELEGRAM_API_HASH", "61e5cc94bc5e6318643707054e54caf4").strip()
 BOT_TOKEN = os.environ.get("LIVE_BOT_TOKEN", "").strip()
-OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "").strip()
+OWNER_ID = os.environ.get("TELEGRAM_OWNER_ID", "8909902924").strip()
 FORCE_SUB_CHANNEL = os.environ.get("FORCE_SUB_CHANNEL", "PW_SENSEI").strip().lstrip("@")
 
 START_IMAGE_URL = "https://graph.org/file/96f7e50b37c6bd4dc5071-5eadeaf54110b8c34a.jpg"
