@@ -63,7 +63,7 @@ from utils.text import display_title
 RECORDINGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "recordings")
 os.makedirs(RECORDINGS_DIR, exist_ok=True)
 
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8556508365:AAEKiRucSL3kIv27asqj5TphieRClMa0zrU")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8556508365:AAGhCYvsQVhx7__Ua3pMqQDF9QeGWY_Izxc")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "-1003880226408")
 BOT_USERNAME = os.environ.get("TELEGRAM_BOT_USERNAME", "PWSENSEI_FileStoreBot")
 LOCAL_API_URL = os.environ.get("TELEGRAM_LOCAL_API_URL", "")
